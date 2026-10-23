@@ -35,4 +35,6 @@ public interface FinancialTransactionRepository
             @Param("userId") UUID userId);
 
     boolean existsByReversalOfTransaction_Id(UUID transactionId);
+    
+    boolean existsByCategoryEntity_Id(UUID categoryId);
 }

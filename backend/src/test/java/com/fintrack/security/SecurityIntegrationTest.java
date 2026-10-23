@@ -196,16 +196,18 @@ class SecurityIntegrationTest {
     @Test
     void userCannotSeeAnotherUsersTransactions()
             throws Exception {
-        jdbcTemplate.update("""
-                INSERT INTO transactions
-                    (id, user_id, transaction_type, description, category,
-                     amount, currency, transaction_date, source_account_id)
-                VALUES (?, ?, 'EXPENSE', 'Private transaction', 'Testing',
-                        10.0000, 'INR', CURRENT_DATE, ?)
-                """,
-                UUID.randomUUID(),
-                userA.getId(),
-                accountA.getId());
+    	jdbcTemplate.update("""
+    		    INSERT INTO transactions
+    		        (id, user_id, transaction_type, description, category,
+    		         category_id, amount, currency, transaction_date, source_account_id)
+    		    VALUES (?, ?, 'EXPENSE', 'Private transaction', 'Food',
+    		            (SELECT id FROM categories
+    		             WHERE is_system = TRUE AND name = 'Food'),
+    		            10.0000, 'INR', CURRENT_DATE, ?)
+    		    """,
+    		    UUID.randomUUID(),
+    		    userA.getId(),
+    		    accountA.getId());
 
         mockMvc.perform(requestAs("/api/transactions", userBToken))
                 .andExpect(status().isOk())

@@ -1,6 +1,8 @@
 package com.fintrack.transaction;
 
 import java.math.BigDecimal;
+import com.fintrack.category.Category;
+import com.fintrack.category.CategoryRepository;
 import java.util.List;
 import com.fintrack.transaction.dto.TransactionResponse;
 import java.time.LocalDate;
@@ -21,19 +23,21 @@ public class TransactionService {
     private final AccountRepository accountRepository;
     private final FinancialTransactionRepository transactionRepository;
     private final LedgerEntryRepository ledgerEntryRepository;
+    private final CategoryRepository categoryRepository;
 
     public TransactionService(
             UserRepository userRepository,
             AccountRepository accountRepository,
             FinancialTransactionRepository transactionRepository,
-            LedgerEntryRepository ledgerEntryRepository) {
+            LedgerEntryRepository ledgerEntryRepository,
+            CategoryRepository categoryRepository) {
 
         this.userRepository = userRepository;
         this.accountRepository = accountRepository;
         this.transactionRepository = transactionRepository;
         this.ledgerEntryRepository = ledgerEntryRepository;
+        this.categoryRepository = categoryRepository;
     }
-
 
     @Transactional
     public FinancialTransaction createTransaction(
@@ -89,6 +93,7 @@ public class TransactionService {
 
         String category = requiredText(
                 request.getCategory(), "Category");
+        Category categoryEntity = resolveCategory(userId, category);
 
         String currency = requiredText(
                 request.getCurrency(), "Currency")
@@ -98,6 +103,7 @@ public class TransactionService {
         LocalDate transactionDate = request.getTransactionDate();
 
         validateType(type);
+        validateCategoryType(categoryEntity, type);
         validateCurrency(currency);
         validateAmount(amount);
 
@@ -218,6 +224,7 @@ public class TransactionService {
                 destination,
                 idempotencyKey
         );
+        transaction.setCategoryEntity(categoryEntity);
 
         FinancialTransaction savedTransaction =
                 transactionRepository.save(transaction);
@@ -292,7 +299,36 @@ public class TransactionService {
 
         ledgerEntryRepository.saveAll(java.util.List.of(debit, credit));
     }
+    
+    private void validateCategoryType(
+            Category category,
+            String transactionType) {
 
+        String categoryType = category.getCategoryType();
+
+        // General-purpose categories can be used for any transaction.
+        if ("BOTH".equalsIgnoreCase(categoryType)) {
+            return;
+        }
+
+        // Income-only categories can only be used for income.
+        if ("INCOME".equals(transactionType)
+                && "INCOME".equalsIgnoreCase(categoryType)) {
+            return;
+        }
+
+        // Expense-only categories can only be used for expenses.
+        if ("EXPENSE".equals(transactionType)
+                && "EXPENSE".equalsIgnoreCase(categoryType)) {
+            return;
+        }
+
+        throw new IllegalArgumentException(
+                "Category type " + categoryType
+                + " is not compatible with transaction type "
+                + transactionType + ".");
+    }
+    
     private void validateType(String type) {
         if (!type.equals("INCOME")
                 && !type.equals("EXPENSE")
@@ -450,10 +486,12 @@ public class TransactionService {
                 destination,
                 null);
 
-        reversal.markAsReversalOf(original);
+		reversal.markAsReversalOf(original);
+		reversal.setCategoryEntity(original.getCategoryEntity());
+		
+		FinancialTransaction savedReversal =
+		        transactionRepository.save(reversal);
 
-        FinancialTransaction savedReversal =
-                transactionRepository.save(reversal);
 
         List<LedgerEntry> originalEntries =
                 ledgerEntryRepository.findAllByTransaction_Id(
@@ -492,5 +530,18 @@ public class TransactionService {
         ledgerEntryRepository.saveAll(compensatingEntries);
 
         return savedReversal;
+    }
+    
+    private Category resolveCategory(UUID userId, String categoryName) {
+        String normalizedName = requiredText(categoryName, "Category");
+
+        return categoryRepository
+                .findByNameIgnoreCaseAndSystemTrue(normalizedName)
+                .or(() -> categoryRepository
+                        .findByUser_IdAndNameIgnoreCaseAndSystemFalse(
+                                userId, normalizedName))
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Category does not exist. Choose a system category "
+                        + "or create a custom category first."));
     }
 }

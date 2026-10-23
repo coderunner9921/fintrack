@@ -74,6 +74,14 @@ public class FinancialTransaction {
 
     @Column(name = "category", nullable = false, length = 80)
     private String category;
+	@ManyToOne(fetch = FetchType.LAZY, optional = false)
+	@JoinColumn(
+	    name = "category_id",
+	    nullable = false,
+	    foreignKey = @ForeignKey(name = "fk_transactions_category")	
+)	
+private com.fintrack.category.Category categoryEntity;
+
 
     @Column(name = "amount", nullable = false, precision = 19, scale = 4)
     private BigDecimal amount;
@@ -218,4 +226,17 @@ public class FinancialTransaction {
     public FinancialTransaction getReversalOfTransaction() {
         return reversalOfTransaction;
     }
+
+	public com.fintrack.category.Category getCategoryEntity() {
+	    return categoryEntity;
+	}
+	
+	public void setCategoryEntity(
+	        com.fintrack.category.Category categoryEntity) {
+	    if (categoryEntity == null) {
+	        throw new IllegalArgumentException("Category is required.");
+	    }
+	
+	    this.categoryEntity = categoryEntity;
+	}	
 }

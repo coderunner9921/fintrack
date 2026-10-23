@@ -1,6 +1,8 @@
 package com.fintrack.transaction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import com.fintrack.category.Category;
+import com.fintrack.category.CategoryRepository;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
@@ -26,6 +28,7 @@ class TransactionServiceTest {
     private FinancialTransactionRepository transactionRepository;
     private LedgerEntryRepository ledgerEntryRepository;
     private TransactionService transactionService;
+    private CategoryRepository categoryRepository;
 
     private UUID userId;
     private UUID sourceId;
@@ -41,12 +44,19 @@ class TransactionServiceTest {
         accountRepository = mock(AccountRepository.class);
         transactionRepository = mock(FinancialTransactionRepository.class);
         ledgerEntryRepository = mock(LedgerEntryRepository.class);
+        categoryRepository = mock(CategoryRepository.class);
+
+        Category category = mock(Category.class);
+        when(category.getCategoryType()).thenReturn("BOTH");
+        when(categoryRepository.findByNameIgnoreCaseAndSystemTrue("General"))
+                .thenReturn(Optional.of(category));
 
         transactionService = new TransactionService(
                 userRepository,
                 accountRepository,
                 transactionRepository,
-                ledgerEntryRepository);
+                ledgerEntryRepository,
+                categoryRepository);
 
         userId = UUID.randomUUID();
         sourceId = UUID.randomUUID();
@@ -171,6 +181,76 @@ class TransactionServiceTest {
         verify(transactionRepository, never())
                 .save(any(FinancialTransaction.class));
     }
+
+
+	@Test
+	void incomeCategoryAllowsIncomeTransaction() {
+	    stubSystemCategoryType("INCOME");
+	
+	    CreateTransactionRequest request =
+	            request("INCOME", null, destinationId, "250.00");
+	
+	    FinancialTransaction result =
+	            transactionService.createTransaction(userId, request);
+	
+	    assertEquals("INCOME", result.getTransactionType());
+	    verify(transactionRepository).save(any(FinancialTransaction.class));
+	    verifyLedgerEntries("DEBIT", destination, "CREDIT", "INCOME");
+	}
+	
+	@Test
+	void incomeCategoryRejectsExpenseTransaction() {
+	    stubSystemCategoryType("INCOME");
+	
+	    CreateTransactionRequest request =
+	            request("EXPENSE", sourceId, null, "50.00");
+	
+	    assertThrows(IllegalArgumentException.class,
+	            () -> transactionService.createTransaction(userId, request));
+	
+	    verify(transactionRepository, never())
+	            .save(any(FinancialTransaction.class));
+	    verify(ledgerEntryRepository, never()).saveAll(any());
+	}
+	
+	@Test
+	void expenseCategoryAllowsExpenseTransaction() {
+	    stubSystemCategoryType("EXPENSE");
+	
+	    CreateTransactionRequest request =
+	            request("EXPENSE", sourceId, null, "50.00");
+	
+	    FinancialTransaction result =
+	            transactionService.createTransaction(userId, request);
+	
+	    assertEquals("EXPENSE", result.getTransactionType());
+	    verify(transactionRepository).save(any(FinancialTransaction.class));
+	    verifyLedgerEntries("DEBIT", null, "CREDIT", null);
+	}
+	
+	@Test
+	void expenseCategoryRejectsIncomeTransaction() {
+	    stubSystemCategoryType("EXPENSE");
+	
+	    CreateTransactionRequest request =
+	            request("INCOME", null, destinationId, "50.00");
+	
+	    assertThrows(IllegalArgumentException.class,
+	            () -> transactionService.createTransaction(userId, request));
+	
+	    verify(transactionRepository, never())
+	            .save(any(FinancialTransaction.class));
+	    verify(ledgerEntryRepository, never()).saveAll(any());
+	}
+	
+	private void stubSystemCategoryType(String categoryType) {
+	    Category category = mock(Category.class);
+	
+	    when(category.getCategoryType()).thenReturn(categoryType);
+	
+	    when(categoryRepository.findByNameIgnoreCaseAndSystemTrue("General"))
+	            .thenReturn(Optional.of(category));
+	}
 
     private CreateTransactionRequest request(
             String type, UUID sourceAccountId,

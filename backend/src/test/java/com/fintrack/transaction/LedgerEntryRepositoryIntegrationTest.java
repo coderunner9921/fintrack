@@ -64,13 +64,16 @@ class LedgerEntryRepositoryIntegrationTest {
             new BigDecimal("100.0000"));
 
         jdbcTemplate.update("""
-            INSERT INTO transactions
-                (id, user_id, transaction_type, description, category,
-                 amount, currency, transaction_date, source_account_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_DATE, ?)
-            """,
-            transactionId, userId, "EXPENSE", "Repository test",
-            "Testing", new BigDecimal("25.0000"), "INR", accountId);
+        	    INSERT INTO transactions
+        	        (id, user_id, transaction_type, description, category,
+        	         category_id, amount, currency, transaction_date, source_account_id)
+        	    VALUES (?, ?, ?, ?, 'Food',
+        	            (SELECT id FROM categories
+        	             WHERE is_system = TRUE AND name = 'Food'),
+        	            ?, ?, CURRENT_DATE, ?)
+        	    """,
+        	    transactionId, userId, "EXPENSE", "Repository test",
+        	    new BigDecimal("25.0000"), "INR", accountId);
     }
 
     private void insertLedgerEntry(

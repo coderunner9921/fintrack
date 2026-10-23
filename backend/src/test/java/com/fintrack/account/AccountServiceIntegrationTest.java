@@ -80,13 +80,15 @@ class AccountServiceIntegrationTest {
         transactionId = UUID.randomUUID();
 
         jdbcTemplate.update("""
-            INSERT INTO transactions
-                (id, user_id, transaction_type, description, category,
-                 amount, currency, transaction_date, source_account_id)
-            VALUES (?, ?, 'EXPENSE', 'Balance test', 'Testing',
-                    1.0000, 'INR', CURRENT_DATE, ?)
-            """,
-            transactionId, user.getId(), account.getId());
+        	    INSERT INTO transactions
+        	        (id, user_id, transaction_type, description, category,
+        	         category_id, amount, currency, transaction_date, source_account_id)
+        	    VALUES (?, ?, 'EXPENSE', 'Balance test', 'Food',
+        	            (SELECT id FROM categories
+        	             WHERE is_system = TRUE AND name = 'Food'),
+        	            1.0000, 'INR', CURRENT_DATE, ?)
+        	    """,
+        	    transactionId, user.getId(), account.getId());
     }
 
     private void insertEntry(String side, String amount) {

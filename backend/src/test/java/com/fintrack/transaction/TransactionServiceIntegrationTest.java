@@ -1,6 +1,10 @@
 package com.fintrack.transaction;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import com.fintrack.analytics.AnalyticsService;
+import com.fintrack.analytics.dto.AnalyticsSummaryResponse;
+import com.fintrack.analytics.dto.CurrencyAnalyticsResponse;
+import com.fintrack.analytics.dto.CategoryExpenseResponse;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.UUID;
@@ -9,6 +13,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import com.fintrack.category.Category;
+import com.fintrack.category.CategoryRepository;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import org.springframework.dao.DataIntegrityViolationException;
 import com.fintrack.account.Account;
@@ -26,6 +32,8 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import com.fintrack.category.CategoryService;
+import org.springframework.web.server.ResponseStatusException;
 
 @SpringBootTest
 @Testcontainers
@@ -46,7 +54,10 @@ class TransactionServiceIntegrationTest {
 
     @Autowired
     private TransactionService transactionService;
-
+    
+    @Autowired
+    private AnalyticsService analyticsService;
+    
     @Autowired
     private AccountRepository accountRepository;
 
@@ -55,6 +66,12 @@ class TransactionServiceIntegrationTest {
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+    
+    @Autowired
+    private CategoryRepository categoryRepository;
+    
+    @Autowired
+    private CategoryService categoryService;
 
     private User user;
 
@@ -87,6 +104,26 @@ class TransactionServiceIntegrationTest {
                         openingBalance));
     }
 
+    private CreateTransactionRequest incomeRequest(
+            UUID accountId,
+            String amount,
+            LocalDate transactionDate) {
+
+        CreateTransactionRequest request =
+                new CreateTransactionRequest();
+
+        request.setTransactionType("INCOME");
+        request.setDescription("Integration test income");
+        request.setCategory("Salary");
+        request.setAmount(new BigDecimal(amount));
+        request.setCurrency("INR");
+        request.setTransactionDate(transactionDate);
+        request.setSourceAccountId(null);
+        request.setDestinationAccountId(accountId);
+
+        return request;
+    }
+    
     private CreateTransactionRequest expenseRequest(
             UUID accountId, String amount) {
 
@@ -95,7 +132,7 @@ class TransactionServiceIntegrationTest {
 
         request.setTransactionType("EXPENSE");
         request.setDescription("Integration test expense");
-        request.setCategory("Testing");
+        request.setCategory("Food");
         request.setAmount(new BigDecimal(amount));
         request.setCurrency("INR");
         request.setTransactionDate(LocalDate.now());
@@ -209,7 +246,6 @@ class TransactionServiceIntegrationTest {
         }
     }
     
-
     @Test
     void repeatingSameIdempotencyKeyAndRequestCreatesOnlyOneTransaction() {
         Account account = createAccount(new BigDecimal("100.00"));
@@ -304,7 +340,6 @@ class TransactionServiceIntegrationTest {
         }
     }
     
-
 	@Test
 	void databaseRejectsTransactionUsingAnotherUsersAccount() {
 	    // Create a different user who owns the account.
@@ -335,23 +370,28 @@ class TransactionServiceIntegrationTest {
 	                        transaction_type,
 	                        description,
 	                        category,
+	                        category_id,
 	                        amount,
 	                        currency,
 	                        transaction_date,
 	                        source_account_id,
 	                        destination_account_id
 	                    )
-	                    VALUES (?, ?, 'EXPENSE', ?, ?, ?, ?, ?, ?, NULL)
+	                    VALUES (
+	                        ?, ?, 'EXPENSE', ?, 'Food',
+	                        (SELECT id FROM categories
+	                         WHERE is_system = TRUE AND name = 'Food'),
+	                        ?, ?, ?, ?, NULL
+	                    )
 	                    """,
 	                    transactionId,
 	                    user.getId(),
 	                    "Cross-user ownership test",
-	                    "Testing",
 	                    new BigDecimal("10.00"),
 	                    "INR",
 	                    LocalDate.now(),
 	                    otherUsersAccount.getId()));
-	
+	    
 	    // The invalid transaction must not have been stored.
 	    assertThat(jdbcTemplate.queryForObject(
 	            "SELECT COUNT(*) FROM transactions WHERE id = ?",
@@ -367,7 +407,7 @@ class TransactionServiceIntegrationTest {
 	    CreateTransactionRequest request = new CreateTransactionRequest();
 	    request.setTransactionType("TRANSFER");
 	    request.setDescription("Integration test transfer");
-	    request.setCategory("Testing");
+	    request.setCategory("Food");
 	    request.setAmount(new BigDecimal("300.00"));
 	    request.setCurrency("INR");
 	    request.setTransactionDate(LocalDate.now());
@@ -507,7 +547,6 @@ class TransactionServiceIntegrationTest {
 	            "rollback-test-001")).isZero();
 	}
 	
-
 	private BigDecimal accountBalance(UUID accountId) {
 	    return jdbcTemplate.queryForObject("""
 	            SELECT a.opening_balance + COALESCE(
@@ -528,7 +567,6 @@ class TransactionServiceIntegrationTest {
 	            accountId);
 	}
 	
-
 	@Test
 	void reversingExpenseRestoresBalanceAndPreservesOriginalLedger() {
 	    Account account = createAccount(new BigDecimal("100.00"));
@@ -578,7 +616,49 @@ class TransactionServiceIntegrationTest {
 	    assertThat(countLedgerEntries()).isEqualTo(4);
 	}
 	
+	@Test
+	void userCannotUseAnotherUsersCustomCategory() {
+	    // Create a second user who owns the custom category.
+	    User otherUser = userRepository.saveAndFlush(
+	            new User(
+	                    "Other Category Owner",
+	                    "category-owner-" + UUID.randomUUID() + "@example.com",
+	                    "test-password-hash"));
 	
+	    Category privateCategory = categoryRepository.saveAndFlush(
+	            new Category(
+	                    otherUser,
+	                    "PrivateCategory",
+	                    "BOTH",
+	                    false));
+	
+	    // Create an account owned by the current test user.
+	    Account account = createAccount(new BigDecimal("100.00"));
+	
+	    // Change the otherwise-valid expense request to use the other
+	    // user's custom category.
+	    CreateTransactionRequest request =
+	            expenseRequest(account.getId(), "25.00");
+	    request.setCategory("PrivateCategory");
+	
+	    long transactionsBefore = countTransactions();
+	    long entriesBefore = countLedgerEntries();
+	
+	    // The category must not be visible to this user.
+	    assertThrows(
+	            IllegalArgumentException.class,
+	            () -> transactionService.createTransaction(
+	                    user.getId(), request));
+	
+	    // The rejected request must not create financial records.
+	    assertThat(countTransactions()).isEqualTo(transactionsBefore);
+	    assertThat(countLedgerEntries()).isEqualTo(entriesBefore);
+	
+	    // Confirm that the category still belongs to the other user.
+	    assertThat(privateCategory.getUser().getId())
+	            .isEqualTo(otherUser.getId());
+	}
+
 	@Test
 	void reversingSameTransactionTwiceIsRejected() {
 	    Account account = createAccount(new BigDecimal("100.00"));
@@ -603,8 +683,7 @@ class TransactionServiceIntegrationTest {
 	    assertThat(countLedgerEntries())
 	            .isEqualTo(entriesAfterFirstReversal);
 	}
-	
-	
+		
 	@Test
 	void userCannotReverseAnotherUsersTransaction() {
 	    User otherUser = userRepository.saveAndFlush(
@@ -721,7 +800,7 @@ class TransactionServiceIntegrationTest {
 	            new CreateTransactionRequest();
 	    transferRequest.setTransactionType("TRANSFER");
 	    transferRequest.setDescription("Transfer for reversal safety test");
-	    transferRequest.setCategory("Testing");
+	    transferRequest.setCategory("Food");
 	    transferRequest.setAmount(new BigDecimal("300.00"));
 	    transferRequest.setCurrency("INR");
 	    transferRequest.setTransactionDate(LocalDate.now());
@@ -763,5 +842,318 @@ class TransactionServiceIntegrationTest {
 	            FROM transactions
 	            WHERE reversal_of_transaction_id = ?
 	            """, Long.class, original.getId())).isZero();
+	}
+	
+	@Test
+	void userCanCreateCustomCategory() {
+	    Category category = categoryService.createCategory(
+	            user.getId(), "Pet Care", "EXPENSE");
+	
+	    assertThat(category.getId()).isNotNull();
+	    assertThat(category.getName()).isEqualTo("Pet Care");
+	    assertThat(category.getCategoryType()).isEqualTo("EXPENSE");
+	    assertThat(category.isSystem()).isFalse();
+	    assertThat(category.getUser().getId()).isEqualTo(user.getId());
+	}
+	
+	@Test
+	void userCannotDeleteSystemCategory() {
+	    Category systemCategory = categoryRepository
+	            .findByNameIgnoreCaseAndSystemTrue("Food")
+	            .orElseThrow();
+	
+	    assertThrows(
+	            ResponseStatusException.class,
+	            () -> categoryService.deleteCategory(
+	                    user.getId(), systemCategory.getId()));
+	
+	    assertThat(categoryRepository.existsById(systemCategory.getId()))
+	            .isTrue();
+	}
+
+	@Test
+	void userCannotDeleteCategoryUsedByTransaction() {
+	    Category category = categoryService.createCategory(
+	            user.getId(), "Subscriptions", "EXPENSE");
+	
+	    Account account = createAccount(new BigDecimal("100.00"));
+	    CreateTransactionRequest request =
+	            expenseRequest(account.getId(), "25.00");
+	    request.setCategory("Subscriptions");
+	
+	    transactionService.createTransaction(user.getId(), request);
+	
+	    assertThrows(
+	            ResponseStatusException.class,
+	            () -> categoryService.deleteCategory(
+	                    user.getId(), category.getId()));
+	
+	    assertThat(categoryRepository.existsById(category.getId()))
+	            .isTrue();
+	}
+
+	@Test
+	void userCanUpdateOwnCustomCategory() {
+	    Category category = categoryService.createCategory(
+	            user.getId(), "Pet Care", "EXPENSE");
+	
+	    Category updated = categoryService.updateCategory(
+	            user.getId(), category.getId(), "Pet Expenses", "EXPENSE");
+	
+	    assertThat(updated.getId()).isEqualTo(category.getId());
+	    assertThat(updated.getName()).isEqualTo("Pet Expenses");
+	    assertThat(updated.getCategoryType()).isEqualTo("EXPENSE");
+	    assertThat(updated.getUser().getId()).isEqualTo(user.getId());
+	}
+	
+	@Test
+	void userCannotUpdateOrDeleteAnotherUsersCustomCategory() {
+	    User otherUser = userRepository.saveAndFlush(
+	    		new User(
+	                    "Other Category Owner",
+	                    "category-owner-" + UUID.randomUUID() + "@example.com",
+	                    "test-password-hash"));
+	
+	    Category privateCategory = categoryRepository.saveAndFlush(
+	            new Category(otherUser, "Private Category", "BOTH", false));
+	
+	    assertThrows(
+	            ResponseStatusException.class,
+	            () -> categoryService.updateCategory(
+	                    user.getId(), privateCategory.getId(),
+	                    "Renamed Category", "BOTH"));
+	
+	    assertThrows(
+	            ResponseStatusException.class,
+	            () -> categoryService.deleteCategory(
+	                    user.getId(), privateCategory.getId()));
+	
+	    Category unchanged = categoryRepository.findById(privateCategory.getId())
+	            .orElseThrow();
+	
+	    assertThat(unchanged.getName()).isEqualTo("Private Category");
+	    assertThat(unchanged.getUser().getId()).isEqualTo(otherUser.getId());
+	}
+
+	@Test
+	void analyticsSummaryCalculatesIncomeExpensesAndCategoryTotals() {
+	    Account account = createAccount(new BigDecimal("1000.00"));
+
+	    LocalDate from = LocalDate.of(2026, 10, 1);
+	    LocalDate to = LocalDate.of(2026, 10, 31);
+
+	    CreateTransactionRequest income =
+	            incomeRequest(account.getId(), "500.00",
+	                    LocalDate.of(2026, 10, 5));
+
+	    transactionService.createTransaction(
+	            user.getId(), income, "analytics-income-001");
+
+	    CreateTransactionRequest expense1 =
+	            expenseRequest(account.getId(), "100.00");
+	    expense1.setTransactionDate(LocalDate.of(2026, 10, 10));
+
+	    transactionService.createTransaction(
+	            user.getId(), expense1, "analytics-expense-001");
+
+	    CreateTransactionRequest expense2 =
+	            expenseRequest(account.getId(), "50.00");
+	    expense2.setTransactionDate(LocalDate.of(2026, 10, 15));
+
+	    transactionService.createTransaction(
+	            user.getId(), expense2, "analytics-expense-002");
+
+	    AnalyticsSummaryResponse summary =
+	            analyticsService.getSummary(user.getId(), from, to);
+
+	    assertThat(summary.from()).isEqualTo(from);
+	    assertThat(summary.to()).isEqualTo(to);
+	    assertThat(summary.currencies()).hasSize(1);
+
+	    CurrencyAnalyticsResponse inr = summary.currencies().get(0);
+
+	    assertThat(inr.currency()).isEqualTo("INR");
+	    assertThat(inr.totalIncome()).isEqualByComparingTo("500.00");
+	    assertThat(inr.totalExpenses()).isEqualByComparingTo("150.00");
+	    assertThat(inr.netCashFlow()).isEqualByComparingTo("350.00");
+	    assertThat(inr.incomeTransactionCount()).isEqualTo(1);
+	    assertThat(inr.expenseTransactionCount()).isEqualTo(2);
+
+	    assertThat(inr.expensesByCategory()).hasSize(1);
+
+	    CategoryExpenseResponse food = inr.expensesByCategory().get(0);
+
+	    assertThat(food.categoryName()).isEqualTo("Food");
+	    assertThat(food.total()).isEqualByComparingTo("150.00");
+	}
+
+	@Test
+	void analyticsExcludesReversedExpenseFromTotalsAndCategoryBreakdown() {
+	    Account account = createAccount(new BigDecimal("1000.00"));
+
+	    LocalDate from = LocalDate.of(2026, 10, 1);
+	    LocalDate to = LocalDate.of(2026, 10, 31);
+
+	    CreateTransactionRequest expenseRequest =
+	            expenseRequest(account.getId(), "100.00");
+
+	    expenseRequest.setTransactionDate(LocalDate.of(2026, 10, 10));
+
+	    FinancialTransaction expense =
+	            transactionService.createTransaction(
+	                    user.getId(),
+	                    expenseRequest,
+	                    "analytics-reversed-expense-001");
+
+	    // Reverse the original expense using the existing reversal logic.
+	    transactionService.reverseTransaction(
+	            user.getId(),
+	            expense.getId());
+
+	    AnalyticsSummaryResponse summary =
+	            analyticsService.getSummary(user.getId(), from, to);
+
+	    assertThat(summary.currencies()).hasSize(1);
+
+	    CurrencyAnalyticsResponse inr = summary.currencies().get(0);
+
+	    assertThat(inr.currency()).isEqualTo("INR");
+	    assertThat(inr.totalIncome()).isEqualByComparingTo("0.00");
+	    assertThat(inr.totalExpenses()).isEqualByComparingTo("0.00");
+	    assertThat(inr.netCashFlow()).isEqualByComparingTo("0.00");
+	    assertThat(inr.incomeTransactionCount()).isZero();
+	    assertThat(inr.expenseTransactionCount()).isZero();
+	    assertThat(inr.expensesByCategory()).isEmpty();
+	}
+
+	@Test
+	void analyticsIncludesOnlyTransactionsWithinRequestedDateRange() {
+	    Account account = createAccount(new BigDecimal("1000.00"));
+
+	    CreateTransactionRequest insideRange =
+	            expenseRequest(account.getId(), "40.00");
+	    insideRange.setTransactionDate(LocalDate.of(2026, 10, 10));
+
+	    transactionService.createTransaction(
+	            user.getId(),
+	            insideRange,
+	            "analytics-date-inside-001");
+
+	    CreateTransactionRequest outsideRange =
+	            expenseRequest(account.getId(), "60.00");
+	    outsideRange.setTransactionDate(LocalDate.of(2026, 9, 30));
+
+	    transactionService.createTransaction(
+	            user.getId(),
+	            outsideRange,
+	            "analytics-date-outside-001");
+
+	    AnalyticsSummaryResponse summary =
+	            analyticsService.getSummary(
+	                    user.getId(),
+	                    LocalDate.of(2026, 10, 1),
+	                    LocalDate.of(2026, 10, 31));
+
+	    assertThat(summary.currencies()).hasSize(1);
+
+	    CurrencyAnalyticsResponse inr = summary.currencies().get(0);
+
+	    assertThat(inr.totalExpenses()).isEqualByComparingTo("40.00");
+	    assertThat(inr.expenseTransactionCount()).isEqualTo(1);
+	    assertThat(inr.expensesByCategory()).hasSize(1);
+	    assertThat(inr.expensesByCategory().get(0).total())
+	            .isEqualByComparingTo("40.00");
+	}
+
+	@Test
+	void analyticsRejectsStartDateAfterEndDate() {
+	    assertThrows(
+	            ResponseStatusException.class,
+	            () -> analyticsService.getSummary(
+	                    user.getId(),
+	                    LocalDate.of(2026, 10, 31),
+	                    LocalDate.of(2026, 10, 1)));
+	}
+
+	@Test
+	void analyticsKeepsDifferentCurrenciesSeparate() {
+	    LocalDate from = LocalDate.of(2026, 10, 1);
+	    LocalDate to = LocalDate.of(2026, 10, 31);
+
+	    Account inrAccount = createAccount(new BigDecimal("1000.00"));
+
+	    Account usdAccount = accountRepository.saveAndFlush(
+	            new Account(
+	                    user,
+	                    "USD Savings " + UUID.randomUUID(),
+	                    "SAVINGS",
+	                    "USD",
+	                    new BigDecimal("1000.00")));
+
+	    CreateTransactionRequest inrExpense =
+	            expenseRequest(inrAccount.getId(), "100.00");
+	    inrExpense.setTransactionDate(LocalDate.of(2026, 10, 10));
+
+	    transactionService.createTransaction(
+	            user.getId(), inrExpense, "analytics-currency-inr-001");
+
+	    CreateTransactionRequest usdExpense =
+	            expenseRequest(usdAccount.getId(), "25.00");
+	    usdExpense.setCurrency("USD");
+	    usdExpense.setTransactionDate(LocalDate.of(2026, 10, 12));
+
+	    transactionService.createTransaction(
+	            user.getId(), usdExpense, "analytics-currency-usd-001");
+
+	    AnalyticsSummaryResponse summary =
+	            analyticsService.getSummary(user.getId(), from, to);
+
+	    assertThat(summary.currencies()).hasSize(2);
+
+	    CurrencyAnalyticsResponse inr = summary.currencies().stream()
+	            .filter(row -> row.currency().equals("INR"))
+	            .findFirst()
+	            .orElseThrow();
+
+	    CurrencyAnalyticsResponse usd = summary.currencies().stream()
+	            .filter(row -> row.currency().equals("USD"))
+	            .findFirst()
+	            .orElseThrow();
+
+	    assertThat(inr.totalExpenses()).isEqualByComparingTo("100.00");
+	    assertThat(usd.totalExpenses()).isEqualByComparingTo("25.00");
+
+	    assertThat(inr.expenseTransactionCount()).isEqualTo(1);
+	    assertThat(usd.expenseTransactionCount()).isEqualTo(1);
+	}
+	
+	@Test
+	void analyticsExcludesTransfersFromIncomeAndExpenseTotals() {
+	    Account source = createAccount(new BigDecimal("1000.00"));
+	    Account destination = createAccount(new BigDecimal("200.00"));
+
+	    LocalDate transactionDate = LocalDate.of(2026, 10, 15);
+
+	    CreateTransactionRequest transfer = new CreateTransactionRequest();
+	    transfer.setTransactionType("TRANSFER");
+	    transfer.setDescription("Analytics transfer test");
+	    transfer.setCategory("Food");
+	    transfer.setAmount(new BigDecimal("100.00"));
+	    transfer.setCurrency("INR");
+	    transfer.setTransactionDate(transactionDate);
+	    transfer.setSourceAccountId(source.getId());
+	    transfer.setDestinationAccountId(destination.getId());
+
+	    transactionService.createTransaction(
+	            user.getId(), transfer, "analytics-transfer-001");
+
+	    AnalyticsSummaryResponse summary =
+	            analyticsService.getSummary(
+	                    user.getId(),
+	                    LocalDate.of(2026, 10, 1),
+	                    LocalDate.of(2026, 10, 31));
+
+	    // Transfers alone should not create an income/expense currency summary.
+	    assertThat(summary.currencies()).isEmpty();
 	}
 }
