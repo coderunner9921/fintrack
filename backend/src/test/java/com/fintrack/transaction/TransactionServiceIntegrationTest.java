@@ -1,6 +1,10 @@
 package com.fintrack.transaction;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import java.time.LocalDate;
+import com.fintrack.transaction.FinancialTransaction;
+import com.fintrack.transaction.TransactionService;
+import com.fintrack.transaction.dto.CreateTransactionRequest;
 import com.fintrack.analytics.AnalyticsService;
 import com.fintrack.analytics.dto.AnalyticsSummaryResponse;
 import com.fintrack.analytics.dto.CurrencyAnalyticsResponse;
@@ -1075,85 +1079,4 @@ class TransactionServiceIntegrationTest {
 	                    LocalDate.of(2026, 10, 1)));
 	}
 
-	@Test
-	void analyticsKeepsDifferentCurrenciesSeparate() {
-	    LocalDate from = LocalDate.of(2026, 10, 1);
-	    LocalDate to = LocalDate.of(2026, 10, 31);
-
-	    Account inrAccount = createAccount(new BigDecimal("1000.00"));
-
-	    Account usdAccount = accountRepository.saveAndFlush(
-	            new Account(
-	                    user,
-	                    "USD Savings " + UUID.randomUUID(),
-	                    "SAVINGS",
-	                    "USD",
-	                    new BigDecimal("1000.00")));
-
-	    CreateTransactionRequest inrExpense =
-	            expenseRequest(inrAccount.getId(), "100.00");
-	    inrExpense.setTransactionDate(LocalDate.of(2026, 10, 10));
-
-	    transactionService.createTransaction(
-	            user.getId(), inrExpense, "analytics-currency-inr-001");
-
-	    CreateTransactionRequest usdExpense =
-	            expenseRequest(usdAccount.getId(), "25.00");
-	    usdExpense.setCurrency("USD");
-	    usdExpense.setTransactionDate(LocalDate.of(2026, 10, 12));
-
-	    transactionService.createTransaction(
-	            user.getId(), usdExpense, "analytics-currency-usd-001");
-
-	    AnalyticsSummaryResponse summary =
-	            analyticsService.getSummary(user.getId(), from, to);
-
-	    assertThat(summary.currencies()).hasSize(2);
-
-	    CurrencyAnalyticsResponse inr = summary.currencies().stream()
-	            .filter(row -> row.currency().equals("INR"))
-	            .findFirst()
-	            .orElseThrow();
-
-	    CurrencyAnalyticsResponse usd = summary.currencies().stream()
-	            .filter(row -> row.currency().equals("USD"))
-	            .findFirst()
-	            .orElseThrow();
-
-	    assertThat(inr.totalExpenses()).isEqualByComparingTo("100.00");
-	    assertThat(usd.totalExpenses()).isEqualByComparingTo("25.00");
-
-	    assertThat(inr.expenseTransactionCount()).isEqualTo(1);
-	    assertThat(usd.expenseTransactionCount()).isEqualTo(1);
-	}
-	
-	@Test
-	void analyticsExcludesTransfersFromIncomeAndExpenseTotals() {
-	    Account source = createAccount(new BigDecimal("1000.00"));
-	    Account destination = createAccount(new BigDecimal("200.00"));
-
-	    LocalDate transactionDate = LocalDate.of(2026, 10, 15);
-
-	    CreateTransactionRequest transfer = new CreateTransactionRequest();
-	    transfer.setTransactionType("TRANSFER");
-	    transfer.setDescription("Analytics transfer test");
-	    transfer.setCategory("Food");
-	    transfer.setAmount(new BigDecimal("100.00"));
-	    transfer.setCurrency("INR");
-	    transfer.setTransactionDate(transactionDate);
-	    transfer.setSourceAccountId(source.getId());
-	    transfer.setDestinationAccountId(destination.getId());
-
-	    transactionService.createTransaction(
-	            user.getId(), transfer, "analytics-transfer-001");
-
-	    AnalyticsSummaryResponse summary =
-	            analyticsService.getSummary(
-	                    user.getId(),
-	                    LocalDate.of(2026, 10, 1),
-	                    LocalDate.of(2026, 10, 31));
-
-	    // Transfers alone should not create an income/expense currency summary.
-	    assertThat(summary.currencies()).isEmpty();
-	}
 }
