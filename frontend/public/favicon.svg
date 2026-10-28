@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="FinTrack">
+  <defs><linearGradient id="g" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#10b981"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs>
+  <rect width="48" height="48" rx="12" fill="#0b1220"/>
+  <rect x="9" y="26" width="7" height="13" rx="2" fill="url(#g)" opacity=".55"/>
+  <rect x="20.5" y="19" width="7" height="20" rx="2" fill="url(#g)" opacity=".8"/>
+  <rect x="32" y="10" width="7" height="29" rx="2" fill="url(#g)"/>
+  <path d="M9 21 L21 14 L27 17 L40 6" fill="none" stroke="#e6fff7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

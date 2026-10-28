@@ -41,6 +41,10 @@ public class TransactionResponse {
                 ? null : transaction.getDestinationAccount().getId();
     }
 
+    public UUID getReversalOfTransactionId() {
+        return reversalOfTransactionId;
+    }
+
     public UUID getId() {
         return id;
     }
